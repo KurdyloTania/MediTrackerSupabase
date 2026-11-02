@@ -1,0 +1,8 @@
+{
+  // Режим Deno лише для Edge Functions; решта проєкту (React Native) лишається як є
+  "deno.enablePaths": ["supabase/functions"],
+  "deno.lint": true,
+  "[typescript]": {
+    "editor.defaultFormatter": null
+  }
+}

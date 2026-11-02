@@ -1,135 +1,254 @@
-import { format, parse, addHours, addDays, isWithinInterval, startOfDay, endOfDay, differenceInMinutes } from 'date-fns';
-import { Frequency, IntervalFrequency, CustomFrequency } from '../types';
+// import {
+//   addDays,
+//   addHours,
+//   startOfDay as fnsStartOfDay,
+//   endOfDay as fnsEndOfDay,
+//   isBefore,
+//   isAfter,
+//   isSameDay,
+//   differenceInMinutes,
+//   differenceInHours,
+// } from 'date-fns';
+// import { MedicationFrequency } from '../types';
 
-// Re-export date-fns functions for convenience
-export { startOfDay, endOfDay };
+// export const startOfDay = fnsStartOfDay;
+// export const endOfDay = fnsEndOfDay;
+// export const isSameDayFn = isSameDay;
 
-export const formatTime = (date: Date): string => {
-  return format(date, 'HH:mm');
-};
+// export function setTimeToDate(date: Date, timeStr: string): Date {
+//   const [hours, minutes] = timeStr.split(':').map(Number);
+//   const result = new Date(date);
+//   result.setHours(hours, minutes, 0, 0);
+//   return result;
+// }
 
-export const parseTimeString = (timeStr: string): Date => {
-  return parse(timeStr, 'HH:mm', new Date());
-};
+// export function parseEndDate(endDateStr: string | null | undefined): Date | null {
+//   if (!endDateStr) return null;
+//   const [y, m, d] = endDateStr.split('-').map(Number);
+//   const date = new Date(y, m - 1, d);
+//   date.setHours(23, 59, 59, 999);
+//   return date;
+// }
 
-export const getNextDoseTimes = (
-  frequency: Frequency,
+// // ==================== НОВІ ФУНКЦІЇ ====================
+
+// export function isTimePassedToday(doseTime: Date, now: Date = new Date()): boolean {
+//   return isBefore(doseTime, now);
+// }
+
+// export function getEditMark(doseTime: Date, now: Date = new Date()): 'auto' | 'manual' | null {
+//   const diffMinutes = differenceInMinutes(now, doseTime);
+//   if (diffMinutes < 0) return null;
+//   if (diffMinutes <= 30) return null;
+//   if (diffMinutes < 24 * 60) return 'manual';
+//   return null;
+// }
+
+// export function isDoseDue(doseTime: Date, now: Date = new Date()): boolean {
+//   const diff = differenceInMinutes(now, doseTime);
+//   return diff >= 0 && diff <= 30;
+// }
+
+// export function canEditDose(doseTime: Date, now: Date = new Date()): boolean {
+//   const diff = differenceInHours(now, doseTime);
+//   return diff >= 0 && diff < 24;
+// }
+
+// export function isPastEditWindow(doseTime: Date, now: Date = new Date()): boolean {
+//   return differenceInHours(now, doseTime) >= 24;
+// }
+
+// export function shouldAutoMiss(doseTime: Date, now: Date = new Date()): boolean {
+//   const diffMinutes = differenceInMinutes(now, doseTime);
+//   return diffMinutes >= 30 && diffMinutes < 24 * 60;
+// }
+
+// // ==================== ГЕНЕРАТОР РОЗКЛАДУ ====================
+
+// export function generateScheduleForDateRange(
+//   frequency: MedicationFrequency,
+//   startDate: Date,
+//   endDate: Date | null,
+//   rangeStart: Date,
+//   rangeEnd: Date
+// ): Date[] {
+//   const results: Date[] = [];
+
+//   const medStart = startOfDay(startDate);
+//   const medEnd = endDate ? parseEndDate(endDate.toISOString().split('T')[0])! : endOfDay(rangeEnd);
+//   const effectiveRangeStart = startOfDay(rangeStart);
+//   const effectiveRangeEnd = endOfDay(rangeEnd);
+
+//   let currentDay = new Date(Math.max(medStart.getTime(), effectiveRangeStart.getTime()));
+
+//   while (currentDay <= effectiveRangeEnd && currentDay <= medEnd) {
+//     const doseTimes = getDoseTimesForDay(frequency, currentDay);
+
+//     for (const dose of doseTimes) {
+//       if (dose >= effectiveRangeStart && dose <= effectiveRangeEnd && dose <= medEnd) {
+//         results.push(dose);
+//       }
+//     }
+//     currentDay = addDays(currentDay, 1);
+//   }
+
+//   return results.sort((a, b) => a.getTime() - b.getTime());
+// }
+
+// function getDoseTimesForDay(freq: MedicationFrequency, date: Date): Date[] {
+//   const day = startOfDay(date);
+//   const times: Date[] = [];
+
+//   switch (freq.type) {
+//     case 'daily':
+//       times.push(setTimeToDate(day, freq.time));
+//       break;
+
+//     case 'interval':
+//       let current = setTimeToDate(day, freq.startTime);
+//       const intervalMs = freq.hours * 60 * 60 * 1000;
+//       while (current <= endOfDay(day)) {
+//         times.push(new Date(current));
+//         current = new Date(current.getTime() + intervalMs);
+//       }
+//       break;
+
+//     case 'custom':
+//       if (freq.weekdays.includes(day.getDay())) {
+//         times.push(setTimeToDate(day, freq.time));
+//       }
+//       break;
+//   }
+//   return times;
+// }
+
+// export { isBefore, isAfter };
+
+
+
+// src/utils/dateHelpers.ts
+import {
+  addDays,
+  addHours,
+  startOfDay as fnsStartOfDay,
+  endOfDay as fnsEndOfDay,
+  isBefore,
+  isAfter,
+  isSameDay,
+  differenceInMinutes,
+  differenceInHours,
+} from 'date-fns';
+import { MedicationFrequency } from '../types';
+
+export const startOfDay = fnsStartOfDay;
+export const endOfDay = fnsEndOfDay;
+export const isSameDayFn = isSameDay;
+
+export function setTimeToDate(date: Date, timeStr: string): Date {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const result = new Date(date);
+  result.setHours(hours, minutes, 0, 0);
+  return result;
+}
+
+export function parseEndDate(endDateStr: string | null | undefined): Date | null {
+  if (!endDateStr) return null;
+  const [y, m, d] = endDateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+// ==================== НОВІ ФУНКЦІЇ ====================
+
+export function isTimePassedToday(doseTime: Date, now: Date = new Date()): boolean {
+  return isBefore(doseTime, now);
+}
+
+export function getEditMark(doseTime: Date, now: Date = new Date()): 'auto' | 'manual' | null {
+  const diffMinutes = differenceInMinutes(now, doseTime);
+  if (diffMinutes < 0) return null;
+  if (diffMinutes <= 30) return null;
+  if (diffMinutes < 24 * 60) return 'manual';
+  return null;
+}
+
+export function isDoseDue(doseTime: Date, now: Date = new Date()): boolean {
+  const diff = differenceInMinutes(now, doseTime);
+  return diff >= 0 && diff <= 30;
+}
+
+export function canEditDose(doseTime: Date, now: Date = new Date()): boolean {
+  const diff = differenceInHours(now, doseTime);
+  return diff >= 0 && diff < 24;
+}
+
+export function isPastEditWindow(doseTime: Date, now: Date = new Date()): boolean {
+  return differenceInHours(now, doseTime) >= 24;
+}
+
+export function shouldAutoMiss(doseTime: Date, now: Date = new Date()): boolean {
+  const diffMinutes = differenceInMinutes(now, doseTime);
+  return diffMinutes >= 30 && diffMinutes < 24 * 60;
+}
+
+// ==================== ГЕНЕРАТОР РОЗКЛАДУ ====================
+
+export function generateScheduleForDateRange(
+  frequency: MedicationFrequency,
   startDate: Date,
   endDate: Date | null,
-  fromDate: Date = new Date(),
-  limit: number = 10
-): Date[] => {
-  const doses: Date[] = [];
-  let currentDate = new Date(fromDate);
-  const end = endDate ? new Date(endDate) : null;
-  
-  if (currentDate < startDate) currentDate = new Date(startDate);
-  
-  const maxIterations = 100; // Prevent infinite loops
-  let iterations = 0;
-  
-  while (doses.length < limit && iterations < maxIterations) {
-    let nextDose: Date | null = null;
-    
-    if (frequency.type === 'daily') {
-      const [hours, minutes] = frequency.time.split(':').map(Number);
-      const candidate = new Date(currentDate);
-      candidate.setHours(hours, minutes, 0, 0);
-      
-      if (candidate < currentDate) {
-        candidate.setDate(candidate.getDate() + 1);
-      }
-      nextDose = candidate;
-      currentDate = new Date(nextDose);
-      currentDate.setDate(currentDate.getDate() + 1);
-    } 
-    else if (frequency.type === 'interval') {
-      const intervalHours = (frequency as IntervalFrequency).hours;
-      const baseDate = doses.length === 0 ? currentDate : new Date(doses[doses.length - 1]);
-      nextDose = addHours(baseDate, intervalHours);
-      currentDate = new Date(nextDose);
-    } 
-    else if (frequency.type === 'custom') {
-      const customFreq = frequency as CustomFrequency;
-      const [hours, minutes] = customFreq.time.split(':').map(Number);
-      let found = false;
-      let tempDate = new Date(currentDate);
-      
-      for (let i = 0; i < 7 && !found; i++) {
-        const dayOfWeek = tempDate.getDay();
-        if (customFreq.weekdays.includes(dayOfWeek)) {
-          const candidate = new Date(tempDate);
-          candidate.setHours(hours, minutes, 0, 0);
-          if (candidate >= currentDate) {
-            nextDose = candidate;
-            found = true;
-          }
-        }
-        if (!found) {
-          tempDate.setDate(tempDate.getDate() + 1);
-        }
-      }
-      
-      if (nextDose) {
-        currentDate = new Date(nextDose);
-        currentDate.setDate(currentDate.getDate() + 1);
+  rangeStart: Date,
+  rangeEnd: Date
+): Date[] {
+  const results: Date[] = [];
+
+  const medStart = startOfDay(startDate);
+  const medEnd = endDate ? parseEndDate(endDate.toISOString().split('T')[0])! : endOfDay(rangeEnd);
+  const effectiveRangeStart = startOfDay(rangeStart);
+  const effectiveRangeEnd = endOfDay(rangeEnd);
+
+  let currentDay = new Date(Math.max(medStart.getTime(), effectiveRangeStart.getTime()));
+
+  while (currentDay <= effectiveRangeEnd && currentDay <= medEnd) {
+    const doseTimes = getDoseTimesForDay(frequency, currentDay);
+
+    for (const dose of doseTimes) {
+      if (dose >= effectiveRangeStart && dose <= effectiveRangeEnd && dose <= medEnd) {
+        results.push(dose);
       }
     }
-    
-    if (nextDose && (!end || nextDose <= end)) {
-      doses.push(nextDose);
-    } else if (nextDose && end && nextDose > end) {
-      break;
-    } else {
-      break;
-    }
-    
-    iterations++;
+    currentDay = addDays(currentDay, 1);
   }
-  
-  return doses;
-};
 
-export const generateDoseSlotsForDateRange = (
-  medication: { frequency: Frequency; start_date: string; end_date: string | null },
-  startDate: Date,
-  endDate: Date
-): Date[] => {
-  const doses: Date[] = [];
-  const medStart = new Date(medication.start_date);
-  const medEnd = medication.end_date ? new Date(medication.end_date) : null;
-  const rangeStart = startDate > medStart ? startDate : medStart;
-  const rangeEnd = endDate < (medEnd || endDate) ? endDate : (medEnd || endDate);
-  
-  if (rangeStart > rangeEnd) return [];
-  
-  let current = new Date(rangeStart);
-  while (current <= rangeEnd) {
-    const dayDoses = getNextDoseTimes(
-      medication.frequency,
-      medStart,
-      medEnd,
-      current,
-      100
-    ).filter(dose => 
-      dose >= startOfDay(rangeStart) && 
-      dose <= endOfDay(rangeEnd)
-    );
-    doses.push(...dayDoses);
-    
-    // Move to next day to avoid infinite loop
-    current.setDate(current.getDate() + 1);
+  return results.sort((a, b) => a.getTime() - b.getTime());
+}
+
+function getDoseTimesForDay(freq: MedicationFrequency, date: Date): Date[] {
+  const day = startOfDay(date);
+  const times: Date[] = [];
+
+  switch (freq.type) {
+    case 'daily':
+      times.push(setTimeToDate(day, freq.time));
+      break;
+
+    case 'interval':
+      let current = setTimeToDate(day, freq.startTime);
+      const intervalMs = freq.hours * 60 * 60 * 1000;
+      while (current <= endOfDay(day)) {
+        times.push(new Date(current));
+        current = new Date(current.getTime() + intervalMs);
+      }
+      break;
+
+    case 'custom':
+      if (freq.weekdays.includes(day.getDay())) {
+        times.push(setTimeToDate(day, freq.time));
+      }
+      break;
   }
-  
-  return doses.sort((a, b) => a.getTime() - b.getTime());
-};
+  return times;
+}
 
-export const isDoseDue = (scheduledTime: Date): boolean => {
-  const now = new Date();
-  return scheduledTime <= now && differenceInMinutes(now, scheduledTime) < 30; // Due within last 30 minutes
-};
-
-export const isDoseUpcoming = (scheduledTime: Date): boolean => {
-  const now = new Date();
-  return scheduledTime > now && differenceInMinutes(scheduledTime, now) <= 60;
-};
+export { isBefore, isAfter };

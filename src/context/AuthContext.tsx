@@ -1,3 +1,4 @@
+// src/context/AuthContext.tsx
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { Session, User } from '@supabase/supabase-js';
@@ -9,6 +10,7 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, fullName: string) => Promise<void>;
   signOut: () => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   deleteAccount: () => Promise<void>;
 }
 
@@ -26,7 +28,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
       setIsLoading(false);
@@ -54,6 +58,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) throw error;
   };
 
+  const resetPassword = async (email: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'meditracker://reset-password',
+    });
+    if (error) throw error;
+  };
+
   const deleteAccount = async () => {
     const { error } = await supabase.functions.invoke('delete-user');
     if (error) throw error;
@@ -61,7 +72,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ session, user, isLoading, signIn, signUp, signOut, deleteAccount }}>
+    <AuthContext.Provider
+      value={{ session, user, isLoading, signIn, signUp, signOut, resetPassword, deleteAccount }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -74,3 +87,18 @@ export function useAuth() {
   }
   return context;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

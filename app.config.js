@@ -28,12 +28,13 @@ export default {
       favicon: "./assets/favicon.png"
     },
     plugins: [
-      "expo-notifications"
+      "expo-notifications",
+      "@react-native-community/datetimepicker",
+      "expo-secure-store"
     ],
     extra: {
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-      // 👇 ДОДАЙТЕ ЦІ РЯДКИ
       eas: {
         projectId: "ac5d9f56-d930-455c-93e3-7718d1863f0f"
       }

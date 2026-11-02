@@ -2,5 +2,10 @@ node_modules/
 .expo/
 dist/
 .env
+.env.*
+!.env.example
 *.local
 .DS_Store
+*.jks
+*.p12
+*.key

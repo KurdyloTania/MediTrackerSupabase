@@ -1,3 +1,4 @@
+// src/functions/delete-user/index.ts
 // @ts-nocheck
 // Edge function to delete user account
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -24,3 +25,25 @@ Deno.serve(async (req) => {
 
   return new Response(JSON.stringify({ success: true }), { status: 200 });
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

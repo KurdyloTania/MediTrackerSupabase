@@ -8,7 +8,7 @@ import { TextInput, ActivityIndicator } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
-  format, isBefore, isToday, addDays, isAfter, startOfDay, isSameDay,
+  format, parseISO, isBefore, isToday, addDays, isAfter, startOfDay, isSameDay,
 } from 'date-fns';
 import { uk } from 'date-fns/locale';
 import { useMedications } from '../context/MedicationsContext';
@@ -63,11 +63,12 @@ export default function AddEditMedicationScreen({ route, navigation }: any) {
   const [notes, setNotes] = useState(medication?.notes ?? '');
   const [reminderEnabled, setReminderEnabled] = useState(medication?.reminder_enabled ?? true);
   const [mealTiming, setMealTiming] = useState<MealTiming>(medication?.meal_timing ?? 'any_time');
+  // Дати з БД ("YYYY-MM-DD") читаємо як МІСЦЕВІ (parseISO), а не як UTC (new Date)
   const [startDate, setStartDate] = useState<Date>(
-    medication?.start_date ? new Date(medication.start_date) : new Date(),
+    medication?.start_date ? parseISO(medication.start_date) : new Date(),
   );
   const [endDate, setEndDate] = useState<Date | null>(
-    medication?.end_date ? new Date(medication.end_date) : new Date(),
+    medication?.end_date ? parseISO(medication.end_date) : new Date(),
   );
   const [noEndDate, setNoEndDate] = useState(!medication?.end_date);
   const [showStartPicker, setShowStartPicker] = useState(false);
@@ -147,7 +148,7 @@ export default function AddEditMedicationScreen({ route, navigation }: any) {
         // 1. Немає дати кінця, АБО
         // 2. Дата кінця >= сьогодні
         if (!med.end_date) return true;
-        const endDateObj = new Date(med.end_date);
+        const endDateObj = parseISO(med.end_date);
         endDateObj.setHours(23, 59, 59, 999);
         return endDateObj >= today;
       });
@@ -217,12 +218,14 @@ export default function AddEditMedicationScreen({ route, navigation }: any) {
     }
   }, [freqType, dailyTime, intervalHours, intervalStart, customWeekdays, customTime]);
 
+  // Дату зберігаємо за МІСЦЕВИМ календарем (format), а не за UTC (toISOString):
+  // після опівночі за Києвом UTC-дата ще "вчорашня".
   const getStartDateString = useCallback((): string => {
-    if (isEditing) return startDate.toISOString().split('T')[0];
+    if (isEditing) return format(startDate, 'yyyy-MM-dd');
     if (isToday(startDate) && isTimePassedToday) {
-      return addDays(startDate, 1).toISOString().split('T')[0];
+      return format(addDays(startDate, 1), 'yyyy-MM-dd');
     }
-    return startDate.toISOString().split('T')[0];
+    return format(startDate, 'yyyy-MM-dd');
   }, [startDate, isTimePassedToday, isEditing]);
 
   const goBack = useCallback(() => {
@@ -241,7 +244,7 @@ export default function AddEditMedicationScreen({ route, navigation }: any) {
       notes: notes.trim() || null,
       frequency: buildFrequency(),
       start_date: getStartDateString(),
-      end_date: noEndDate ? null : (endDate ? endDate.toISOString().split('T')[0] : null),
+      end_date: noEndDate ? null : (endDate ? format(endDate, 'yyyy-MM-dd') : null),
       reminder_enabled: reminderEnabled,
       meal_timing: mealTiming,
       stock_quantity: stockQuantityValue,

@@ -1,14 +1,22 @@
 // Запуск: deno test handler_test.ts
 import { makeHandler, type Deps, type Role } from "./handler.ts";
+import type { DataSource } from "./tools/executor.ts";
 
 const USER = { id: "11111111-1111-1111-1111-111111111111" };
 const OWN_CONV = "c1000000-0000-4000-8000-000000000001";
 const FOREIGN_CONV = "c2000000-0000-4000-8000-000000000002";
 
-function fakeDeps(opts: { user?: { id: string } | null; failDb?: boolean } = {}) {
+const emptyData: DataSource = {
+  listMedications: () => Promise.resolve([]),
+  listDoseLogs: () => Promise.resolve([]),
+};
+
+function fakeDeps(opts: { user?: { id: string } | null; failDb?: boolean; debug?: boolean } = {}) {
   const saved: { role: Role; content: string; conv: string }[] = [];
   const created: string[] = [];
   const deps: Deps = {
+    data: emptyData,
+    debugTools: opts.debug ?? false,
     authenticate: () => Promise.resolve(opts.user === undefined ? USER : opts.user),
     conversationExists: (id) => {
       if (opts.failDb) return Promise.reject(new Error("db secret details"));
@@ -121,4 +129,30 @@ Deno.test("збій БД -> 500 без витоку деталей", async () =>
   const t = await r.text();
   if (r.status !== 500) throw new Error(`status ${r.status}`);
   if (t.includes("secret")) throw new Error("витік деталей помилки");
+});
+
+Deno.test("debug_tool вимкнено (за замовчуванням): запит іде звичайним шляхом і валідується як чат", async () => {
+  const r = await makeHandler(() => fakeDeps().deps)(req({ debug_tool: "get_schedule", timezone: "Europe/Kyiv" }));
+  if (r.status !== 400) throw new Error(`status ${r.status}`); // немає message
+});
+
+Deno.test("debug_tool увімкнено: виконує інструмент і не пише в БД", async () => {
+  const { deps, saved } = fakeDeps({ debug: true });
+  const r = await makeHandler(() => deps)(req({ debug_tool: "get_medications", debug_args: {}, timezone: "Europe/Kyiv" }));
+  if (r.status !== 200) throw new Error(`status ${r.status}`);
+  const j = await r.json();
+  if (j.ok !== true || j.result.count !== 0) throw new Error("bad result");
+  if (saved.length) throw new Error("debug не повинен зберігати повідомлення");
+});
+
+Deno.test("debug_tool увімкнено: без авторизації все одно 401", async () => {
+  const r = await makeHandler(() => fakeDeps({ debug: true }).deps)(req({ debug_tool: "get_medications", timezone: "Europe/Kyiv" }, { auth: null }));
+  if (r.status !== 401) throw new Error(`status ${r.status}`);
+});
+
+Deno.test("debug_tool: хибна timezone -> 400; невідомий інструмент -> ok:false", async () => {
+  const h = makeHandler(() => fakeDeps({ debug: true }).deps);
+  if ((await h(req({ debug_tool: "get_medications", timezone: "Mars/X" }))).status !== 400) throw new Error("tz");
+  const j = await (await h(req({ debug_tool: "drop_db", timezone: "Europe/Kyiv" }))).json();
+  if (j.ok !== false) throw new Error("unknown tool");
 });

@@ -2,7 +2,8 @@
 // тому handler тестується без справжнього Supabase.
 
 import { corsHeaders, errorResponse, jsonResponse } from "./_shared/http.ts";
-import { MAX_BODY_BYTES, parseChatRequest } from "./_shared/validate.ts";
+import { isValidTimezone, MAX_BODY_BYTES, parseChatRequest } from "./_shared/validate.ts";
+import { type DataSource, executeTool } from "./tools/executor.ts";
 
 export type Role = "user" | "assistant";
 
@@ -14,6 +15,10 @@ export interface SavedMessage {
 }
 
 export interface Deps {
+  /** Читання медичних даних користувача (через RLS). Використовують інструменти. */
+  data: DataSource;
+  /** Налагоджувальний режим для перевірки інструментів без Gemini (етап 3). */
+  debugTools: boolean;
   /** Повертає користувача за перевіреним JWT або null. */
   authenticate(): Promise<{ id: string } | null>;
   /** Перевіряє, що розмова належить користувачу (через RLS). */
@@ -63,6 +68,23 @@ export function makeHandler(createDeps: DepsFactory) {
       } catch {
         return errorResponse(400, "invalid_json", "Некоректний JSON.");
       }
+
+      // ЕТАП 3 (тимчасово): прямий виклик інструмента для перевірки на реальних даних.
+      // Вмикається лише секретом AI_DEBUG_TOOLS=1; на етапі 6 видалимо.
+      if (
+        deps.debugTools && typeof json === "object" && json !== null &&
+        typeof (json as Record<string, unknown>).debug_tool === "string"
+      ) {
+        const j = json as Record<string, unknown>;
+        if (!isValidTimezone(j.timezone)) {
+          return errorResponse(400, "invalid_request", "Потрібна коректна timezone.");
+        }
+        const r = await executeTool(j.debug_tool as string, j.debug_args, {
+          tz: j.timezone, now: new Date(), data: deps.data,
+        });
+        return jsonResponse(r);
+      }
+
       const parsed = parseChatRequest(json);
       if (!parsed.ok) {
         return errorResponse(400, "invalid_request", parsed.message);

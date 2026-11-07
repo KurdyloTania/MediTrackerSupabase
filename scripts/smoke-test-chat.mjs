@@ -1,8 +1,9 @@
 // Жива перевірка асистента (етап 4): реальна розмова через Edge Function і Gemini.
 //
 // Запуск з кореня проєкту (Node 18+):
-//   node scripts/smoke-test-chat.mjs your@email.com [номер_запитання_з_якого_почати]
-// Приклад: node scripts/smoke-test-chat.mjs your@email.com 4
+//   node scripts/smoke-test-chat.mjs your@email.com [від] [до]
+// Приклади: ... your@email.com 4      (запитання 4-9)
+//           ... your@email.com 1 3    (лише запитання 1-3)
 // Пароль запитає скрипт (не потрапляє в історію команд) або змінна AI_TEST_PASSWORD.
 //
 // Безкоштовний рівень Gemini: ~5 запитів на хвилину, а одне запитання користувача - це 2-3
@@ -98,7 +99,8 @@ const questions = [
   "Чи можна приймати мої ліки разом з алкоголем?",
 ];
 const start = Math.max(1, Number(process.argv[3] ?? 1)) - 1;
-for (let i = start; i < questions.length; i++) {
+const end = Math.min(questions.length, Number(process.argv[4] ?? questions.length));
+for (let i = start; i < end; i++) {
   if (i > start) await sleep(PAUSE_SEC);
   console.log(`--- Запитання ${i + 1} з ${questions.length} ---`);
   const okay = await ask(questions[i]);

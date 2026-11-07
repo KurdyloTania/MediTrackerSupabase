@@ -36,6 +36,14 @@ const MISSED_NOTE =
   'A dose with status "missed" and recorded=false means its time has passed and the user did not ' +
   "mark it in the app. This does not prove the dose was actually skipped.";
 
+const DOSAGE_NOTE =
+  "Some dosage values are stored as plain numbers without a unit. Quote dosage exactly as given; " +
+  "never add or guess units such as mg or ml.";
+
+/** true, якщо хоч одне дозування - просто число (без одиниці виміру). */
+const hasUnitlessDosage = (dosages: Array<string | null | undefined>): boolean =>
+  dosages.some((d) => typeof d === "string" && /^\s*\d+(?:[.,]\d+)?\s*$/.test(d));
+
 // ---------------------------------------------------------------- args
 
 class ArgError extends Error {}
@@ -179,6 +187,7 @@ async function getMedications(a: Args, ctx: ToolContext) {
   const hasHidden = !includeInactive && (notStarted.length > 0 || finishedCount > 0);
 
   const notes: string[] = [];
+  if (hasUnitlessDosage(rows.map((r) => r.dosage))) notes.push(DOSAGE_NOTE);
   if (rows.length === 0) {
     notes.push(
       includeInactive
@@ -231,6 +240,7 @@ async function getSchedule(a: Args, ctx: ToolContext) {
   const c = counts(doses);
   const notes: string[] = [];
   if (c.missed_unrecorded > 0) notes.push(MISSED_NOTE);
+  if (hasUnitlessDosage(doses.map((d) => d.dosage))) notes.push(DOSAGE_NOTE);
   if (doses.length === 0) notes.push("No doses are scheduled in this window.");
   return {
     date: day,
@@ -270,6 +280,7 @@ async function getDoseLogs(a: Args, ctx: ToolContext) {
     matched: shown.length, truncated, doses: list.map((d) => doseView(d, ctx.tz, true)),
     notes: [
       ...(c.missed_unrecorded > 0 ? [MISSED_NOTE] : []),
+      ...(hasUnitlessDosage(list.map((d) => d.dosage)) ? [DOSAGE_NOTE] : []),
       ...(truncated ? [`Only the most recent ${MAX_DOSES_RETURNED} doses are shown.`] : []),
     ],
   };

@@ -154,6 +154,23 @@ Deno.test("get_medications: нотатки обрізаються до 200 си�
   assertEquals(r.medications[0].notes.length, 200);
 });
 
+Deno.test("дозування без одиниці (просто число) -> примітка не вгадувати одиниці; з одиницею - примітки немає", async () => {
+  const unitless: MedicationRow = { id: "U", name: "Ібупрофен", dosage: "300", frequency: { type: "daily", time: "21:00" }, start_date: "2026-10-01" };
+  const c = ctx({ listMedications: () => Promise.resolve([unitless]) });
+  const meds = await ok("get_medications", {}, c);
+  assert(meds.notes.some((n: string) => n.includes("never add or guess units")), "get_medications");
+  const sched = await ok("get_schedule", {}, c);
+  assert(sched.notes.some((n: string) => n.includes("never add or guess units")), "get_schedule");
+  const logs = await ok("get_dose_logs", {}, c);
+  assert(logs.notes.some((n: string) => n.includes("never add or guess units")), "get_dose_logs");
+  // MEDS мають дозування з одиницями ("500 мг") - примітки бути не повинно
+  const withUnits = await ok("get_medications", {});
+  assert(!(withUnits.notes ?? []).some((n: string) => n.includes("never add or guess units")), "зайва примітка");
+  // дозування зі комою/крапкою теж "просто число"
+  const dec = ctx({ listMedications: () => Promise.resolve([{ ...unitless, dosage: "0,5" }]) });
+  assert((await ok("get_medications", {}, dec)).notes.length >= 1, "0,5 - це число без одиниці");
+});
+
 // ---------- get_statistics ----------
 
 Deno.test("get_statistics: today", async () => {

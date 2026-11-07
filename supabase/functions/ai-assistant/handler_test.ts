@@ -1,38 +1,60 @@
-// Запуск: deno test handler_test.ts
-import { makeHandler, type Deps, type Role } from "./handler.ts";
+// Запуск: deno test --config deno.json handler_test.ts
+import { type Deps, HISTORY_LIMIT, makeHandler, type Role } from "./handler.ts";
 import type { DataSource } from "./tools/executor.ts";
+import type { HistoryMessage, ToolCallRecord } from "./llm/agent.ts";
+import { LlmError, type Step } from "./llm/types.ts";
+import { functionCall, modelText, scriptedLlm } from "./llm/test_helpers.ts";
+import { assert, assertEquals } from "./testing.ts";
 
 const USER = { id: "11111111-1111-1111-1111-111111111111" };
 const OWN_CONV = "c1000000-0000-4000-8000-000000000001";
 const FOREIGN_CONV = "c2000000-0000-4000-8000-000000000002";
+const NEW_CONV = "c3000000-0000-4000-8000-000000000003";
+const NOW = new Date("2026-11-02T13:21:00Z");
 
 const emptyData: DataSource = {
   listMedications: () => Promise.resolve([]),
   listDoseLogs: () => Promise.resolve([]),
 };
 
-function fakeDeps(opts: { user?: { id: string } | null; failDb?: boolean; debug?: boolean } = {}) {
-  const saved: { role: Role; content: string; conv: string }[] = [];
+interface Opts {
+  user?: { id: string } | null;
+  failDb?: boolean;
+  debug?: boolean;
+  script?: Array<Step[] | Error>;
+  history?: HistoryMessage[];
+}
+
+function fakeDeps(opts: Opts = {}) {
+  const saved: { role: Role; content: string; conv: string; toolCalls?: ToolCallRecord[] }[] = [];
   const created: string[] = [];
+  const historyCalls: Array<[string, number]> = [];
+  const llm = scriptedLlm(opts.script ?? [[modelText("Відповідь тесту")]]);
   const deps: Deps = {
     data: emptyData,
+    llm,
+    now: () => NOW,
     debugTools: opts.debug ?? false,
     authenticate: () => Promise.resolve(opts.user === undefined ? USER : opts.user),
     conversationExists: (id) => {
       if (opts.failDb) return Promise.reject(new Error("db secret details"));
       return Promise.resolve(id === OWN_CONV);
     },
+    recentMessages: (conv, limit) => {
+      historyCalls.push([conv, limit]);
+      return Promise.resolve(opts.history ?? []);
+    },
     createConversation: (_u, title) => {
       if (opts.failDb) return Promise.reject(new Error("db secret details"));
       created.push(title);
-      return Promise.resolve("c3000000-0000-4000-8000-000000000003");
+      return Promise.resolve(NEW_CONV);
     },
-    saveMessage: (_u, conv, role, content) => {
-      saved.push({ role, content, conv });
+    saveMessage: (_u, conv, role, content, toolCalls) => {
+      saved.push({ role, content, conv, toolCalls });
       return Promise.resolve({ id: crypto.randomUUID(), role, content, created_at: new Date().toISOString() });
     },
   };
-  return { deps, saved, created };
+  return { deps, saved, created, llm, historyCalls };
 }
 
 function req(body: unknown, init: { method?: string; auth?: string | null } = {}) {
@@ -47,30 +69,24 @@ function req(body: unknown, init: { method?: string; auth?: string | null } = {}
 }
 
 const ok = { message: "Які ліки я приймаю?", timezone: "Europe/Kyiv" };
+const status = async (h: ReturnType<typeof makeHandler>, r: Request) => (await h(r)).status;
 
 Deno.test("OPTIONS -> 204 з CORS", async () => {
-  const h = makeHandler(() => fakeDeps().deps);
-  const r = await h(req(null, { method: "OPTIONS", auth: null }));
-  if (r.status !== 204) throw new Error(`status ${r.status}`);
-  if (!r.headers.get("Access-Control-Allow-Origin")) throw new Error("no CORS");
+  const r = await makeHandler(() => fakeDeps().deps)(req(null, { method: "OPTIONS", auth: null }));
+  assertEquals(r.status, 204);
+  assert(!!r.headers.get("Access-Control-Allow-Origin"), "no CORS");
 });
 
-Deno.test("GET -> 405", async () => {
-  const h = makeHandler(() => fakeDeps().deps);
-  const r = await h(req(null, { method: "GET" }));
-  if (r.status !== 405) throw new Error(`status ${r.status}`);
+Deno.test("GET -> 405; без Authorization -> 401; недійсний токен -> 401", async () => {
+  assertEquals(await status(makeHandler(() => fakeDeps().deps), req(null, { method: "GET" })), 405);
+  assertEquals(await status(makeHandler(() => fakeDeps().deps), req(ok, { auth: null })), 401);
+  assertEquals(await status(makeHandler(() => fakeDeps({ user: null }).deps), req(ok)), 401);
 });
 
-Deno.test("без Authorization -> 401", async () => {
-  const h = makeHandler(() => fakeDeps().deps);
-  const r = await h(req(ok, { auth: null }));
-  if (r.status !== 401) throw new Error(`status ${r.status}`);
-});
-
-Deno.test("недійсний токен -> 401", async () => {
-  const h = makeHandler(() => fakeDeps({ user: null }).deps);
-  const r = await h(req(ok));
-  if (r.status !== 401) throw new Error(`status ${r.status}`);
+Deno.test("недійсний токен: модель не викликається", async () => {
+  const f = fakeDeps({ user: null });
+  await makeHandler(() => f.deps)(req(ok));
+  assertEquals(f.llm.requests.length, 0);
 });
 
 for (const [name, body] of Object.entries({
@@ -82,77 +98,149 @@ for (const [name, body] of Object.entries({
   "conversation_id не UUID": { ...ok, conversation_id: "123" },
   "масив замість об'єкта": [1, 2],
 })) {
-  Deno.test(`валідація: ${name} -> 400`, async () => {
-    const { deps, saved } = fakeDeps();
-    const r = await makeHandler(() => deps)(req(body));
-    if (r.status !== 400) throw new Error(`status ${r.status}`);
-    if (saved.length) throw new Error("не повинно нічого зберігатись");
+  Deno.test(`валідація: ${name} -> 400, нічого не зберігається, модель не викликається`, async () => {
+    const f = fakeDeps();
+    assertEquals(await status(makeHandler(() => f.deps), req(body)), 400);
+    assertEquals(f.saved.length, 0);
+    assertEquals(f.llm.requests.length, 0);
   });
 }
 
-Deno.test("битий JSON -> 400", async () => {
-  const r = await makeHandler(() => fakeDeps().deps)(req("{не json"));
-  if (r.status !== 400) throw new Error(`status ${r.status}`);
+Deno.test("битий JSON -> 400; завеликий body -> 413", async () => {
+  assertEquals(await status(makeHandler(() => fakeDeps().deps), req("{не json")), 400);
+  assertEquals(await status(makeHandler(() => fakeDeps().deps), req({ ...ok, pad: "x".repeat(20000) })), 413);
 });
 
-Deno.test("завеликий body -> 413", async () => {
-  const r = await makeHandler(() => fakeDeps().deps)(req({ ...ok, pad: "x".repeat(20000) }));
-  if (r.status !== 413) throw new Error(`status ${r.status}`);
-});
-
-Deno.test("нова розмова: створюється, зберігаються 2 повідомлення, заголовок <=60", async () => {
-  const { deps, saved, created } = fakeDeps();
-  const long = "Я".repeat(100);
-  const r = await makeHandler(() => deps)(req({ ...ok, message: long }));
-  if (r.status !== 200) throw new Error(`status ${r.status}`);
+Deno.test("нова розмова: відповідь моделі, розмова створюється ПІСЛЯ відповіді, 2 повідомлення, заголовок <=60", async () => {
+  const f = fakeDeps();
+  const r = await makeHandler(() => f.deps)(req({ ...ok, message: "Я".repeat(100) }));
+  assertEquals(r.status, 200);
   const j = await r.json();
-  if (!j.conversation_id || j.message.role !== "assistant") throw new Error("bad body");
-  if (created.length !== 1 || created[0].length !== 60) throw new Error("title");
-  if (saved.map((s) => s.role).join() !== "user,assistant") throw new Error("order");
+  assertEquals(j.conversation_id, NEW_CONV);
+  assertEquals(j.message.role, "assistant");
+  assertEquals(j.message.content, "Відповідь тесту");
+  assertEquals(f.created.length, 1);
+  assertEquals(f.created[0].length, 60);
+  assertEquals(f.saved.map((s) => s.role), ["user", "assistant"]);
+  assertEquals(f.historyCalls.length, 0); // у новій розмові історії немає
+  assertEquals(f.llm.requests.length, 1);
 });
 
-Deno.test("існуюча власна розмова -> 200 без створення нової", async () => {
-  const { deps, created } = fakeDeps();
-  const r = await makeHandler(() => deps)(req({ ...ok, conversation_id: OWN_CONV }));
-  if (r.status !== 200 || created.length) throw new Error("unexpected");
-  if ((await r.json()).conversation_id !== OWN_CONV) throw new Error("conv id");
+Deno.test("існуюча власна розмова: історія береться з БД і передається моделі", async () => {
+  const history: HistoryMessage[] = [
+    { role: "user", content: "Привіт" },
+    { role: "assistant", content: "Вітаю! Чим допомогти?" },
+  ];
+  const f = fakeDeps({ history });
+  const r = await makeHandler(() => f.deps)(req({ ...ok, conversation_id: OWN_CONV }));
+  assertEquals(r.status, 200);
+  assertEquals((await r.json()).conversation_id, OWN_CONV);
+  assertEquals(f.created.length, 0);
+  assertEquals(f.historyCalls, [[OWN_CONV, HISTORY_LIMIT]]);
+  assertEquals(f.llm.requests[0].input.map((s) => s.type), ["user_input", "model_output", "user_input"]);
 });
 
-Deno.test("чужа розмова -> 404 і нічого не зберігається", async () => {
-  const { deps, saved } = fakeDeps();
-  const r = await makeHandler(() => deps)(req({ ...ok, conversation_id: FOREIGN_CONV }));
-  if (r.status !== 404 || saved.length) throw new Error(`status ${r.status}`);
+Deno.test("чужа розмова -> 404, нічого не зберігається, модель не викликається", async () => {
+  const f = fakeDeps();
+  const r = await makeHandler(() => f.deps)(req({ ...ok, conversation_id: FOREIGN_CONV }));
+  assertEquals(r.status, 404);
+  assertEquals(f.saved.length, 0);
+  assertEquals(f.llm.requests.length, 0);
+});
+
+Deno.test("виклики інструментів зберігаються разом із відповіддю асистента (назва + аргументи)", async () => {
+  const f = fakeDeps({
+    script: [[functionCall("c1", "get_schedule", { part_of_day: "evening" })], [modelText("Омепразол о 21:00")]],
+  });
+  const r = await makeHandler(() => f.deps)(req(ok));
+  assertEquals(r.status, 200);
+  const assistant = f.saved.find((s) => s.role === "assistant")!;
+  assertEquals(assistant.toolCalls, [{ name: "get_schedule", args: { part_of_day: "evening" } }]);
+  assertEquals(f.saved.find((s) => s.role === "user")!.toolCalls, undefined);
+});
+
+for (const [kind, expectedStatus, code] of [
+  ["rate_limited", 429, "ai_rate_limited"],
+  ["unavailable", 503, "ai_unavailable"],
+  ["not_configured", 503, "ai_not_configured"],
+  ["auth", 502, "ai_error"],
+  ["bad_request", 502, "ai_error"],
+  ["bad_response", 502, "ai_error"],
+] as const) {
+  Deno.test(`помилка моделі ${kind} -> HTTP ${expectedStatus} (${code}), нічого не зберігається`, async () => {
+    const f = fakeDeps({ script: [new LlmError(kind, `Gemini ${kind}`, 429)] });
+    const r = await makeHandler(() => f.deps)(req(ok));
+    assertEquals(r.status, expectedStatus);
+    const j = await r.json();
+    assertEquals(j.error.code, code);
+    assert(!JSON.stringify(j).includes("Gemini"), "внутрішні деталі не віддаються клієнту");
+    assertEquals(f.saved.length, 0);
+    assertEquals(f.created.length, 0); // порожня розмова теж не створюється
+  });
+}
+
+Deno.test("429: клієнту віддається retry_after_seconds і заголовок Retry-After", async () => {
+  const f = fakeDeps({ script: [new LlmError("rate_limited", "Gemini HTTP 429", 429, "x", 53)] });
+  const r = await makeHandler(() => f.deps)(req(ok));
+  assertEquals(r.status, 429);
+  assertEquals(r.headers.get("Retry-After"), "53");
+  const j = await r.json();
+  assertEquals(j.error.retry_after_seconds, 53);
+  assert(j.error.message.includes("53"), "повідомлення називає час очікування");
+});
+
+Deno.test("429 без підказки Google: чекати 60 с за замовчуванням; значення обмежене 300 с", async () => {
+  const a = await makeHandler(() => fakeDeps({ script: [new LlmError("rate_limited", "m", 429)] }).deps)(req(ok));
+  assertEquals((await a.json()).error.retry_after_seconds, 60);
+  const b = await makeHandler(() => fakeDeps({ script: [new LlmError("rate_limited", "m", 429, undefined, 9999)] }).deps)(req(ok));
+  assertEquals((await b.json()).error.retry_after_seconds, 300);
+});
+
+Deno.test("detail від Google віддається лише в налагоджувальному режимі", async () => {
+  const err = () => new LlmError("bad_request", "Gemini HTTP 400 INVALID_ARGUMENT", 400, "Unknown name x");
+  const off = await (await makeHandler(() => fakeDeps({ script: [err()] }).deps)(req(ok))).json();
+  assertEquals(off.debug, undefined);
+  const on = await (await makeHandler(() => fakeDeps({ script: [err()], debug: true }).deps)(req(ok))).json();
+  assertEquals(on.debug, { kind: "bad_request", status: 400, detail: "Unknown name x" });
 });
 
 Deno.test("збій БД -> 500 без витоку деталей", async () => {
   const r = await makeHandler(() => fakeDeps({ failDb: true }).deps)(req(ok));
   const t = await r.text();
-  if (r.status !== 500) throw new Error(`status ${r.status}`);
-  if (t.includes("secret")) throw new Error("витік деталей помилки");
+  assertEquals(r.status, 500);
+  assert(!t.includes("secret"), "витік деталей помилки");
 });
 
-Deno.test("debug_tool вимкнено (за замовчуванням): запит іде звичайним шляхом і валідується як чат", async () => {
-  const r = await makeHandler(() => fakeDeps().deps)(req({ debug_tool: "get_schedule", timezone: "Europe/Kyiv" }));
-  if (r.status !== 400) throw new Error(`status ${r.status}`); // немає message
+// ---- налагоджувальний режим інструментів (етап 3, тимчасово) ----
+
+Deno.test("debug_tool вимкнено: запит валідується як чат, модель не викликається", async () => {
+  const f = fakeDeps();
+  const r = await makeHandler(() => f.deps)(req({ debug_tool: "get_schedule", timezone: "Europe/Kyiv" }));
+  assertEquals(r.status, 400); // немає message
+  assertEquals(f.llm.requests.length, 0);
 });
 
-Deno.test("debug_tool увімкнено: виконує інструмент і не пише в БД", async () => {
-  const { deps, saved } = fakeDeps({ debug: true });
-  const r = await makeHandler(() => deps)(req({ debug_tool: "get_medications", debug_args: {}, timezone: "Europe/Kyiv" }));
-  if (r.status !== 200) throw new Error(`status ${r.status}`);
+Deno.test("debug_tool увімкнено: виконує інструмент, не пише в БД і не викликає модель", async () => {
+  const f = fakeDeps({ debug: true });
+  const r = await makeHandler(() => f.deps)(req({ debug_tool: "get_medications", debug_args: {}, timezone: "Europe/Kyiv" }));
+  assertEquals(r.status, 200);
   const j = await r.json();
-  if (j.ok !== true || j.result.count !== 0) throw new Error("bad result");
-  if (saved.length) throw new Error("debug не повинен зберігати повідомлення");
+  assertEquals(j.ok, true);
+  assertEquals(j.result.count, 0);
+  assertEquals(f.saved.length, 0);
+  assertEquals(f.llm.requests.length, 0);
 });
 
 Deno.test("debug_tool увімкнено: без авторизації все одно 401", async () => {
-  const r = await makeHandler(() => fakeDeps({ debug: true }).deps)(req({ debug_tool: "get_medications", timezone: "Europe/Kyiv" }, { auth: null }));
-  if (r.status !== 401) throw new Error(`status ${r.status}`);
+  const r = await makeHandler(() => fakeDeps({ debug: true }).deps)(
+    req({ debug_tool: "get_medications", timezone: "Europe/Kyiv" }, { auth: null }),
+  );
+  assertEquals(r.status, 401);
 });
 
 Deno.test("debug_tool: хибна timezone -> 400; невідомий інструмент -> ok:false", async () => {
   const h = makeHandler(() => fakeDeps({ debug: true }).deps);
-  if ((await h(req({ debug_tool: "get_medications", timezone: "Mars/X" }))).status !== 400) throw new Error("tz");
+  assertEquals((await h(req({ debug_tool: "get_medications", timezone: "Mars/X" }))).status, 400);
   const j = await (await h(req({ debug_tool: "drop_db", timezone: "Europe/Kyiv" }))).json();
-  if (j.ok !== false) throw new Error("unknown tool");
+  assertEquals(j.ok, false);
 });

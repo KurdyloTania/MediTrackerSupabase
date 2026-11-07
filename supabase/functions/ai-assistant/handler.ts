@@ -4,6 +4,11 @@
 import { corsHeaders, errorResponse, jsonResponse } from "./_shared/http.ts";
 import { isValidTimezone, MAX_BODY_BYTES, parseChatRequest } from "./_shared/validate.ts";
 import { type DataSource, executeTool } from "./tools/executor.ts";
+import { type HistoryMessage, runAgent, type ToolCallRecord } from "./llm/agent.ts";
+import { type LlmClient, LlmError } from "./llm/types.ts";
+
+/** Скільки останніх повідомлень розмови передаємо моделі як контекст. */
+export const HISTORY_LIMIT = 12;
 
 export type Role = "user" | "assistant";
 
@@ -17,18 +22,24 @@ export interface SavedMessage {
 export interface Deps {
   /** Читання медичних даних користувача (через RLS). Використовують інструменти. */
   data: DataSource;
+  /** Мовна модель (Gemini). У тестах підміняється заглушкою. */
+  llm: LlmClient;
+  now(): Date;
   /** Налагоджувальний режим для перевірки інструментів без Gemini (етап 3). */
   debugTools: boolean;
   /** Повертає користувача за перевіреним JWT або null. */
   authenticate(): Promise<{ id: string } | null>;
   /** Перевіряє, що розмова належить користувачу (через RLS). */
   conversationExists(conversationId: string): Promise<boolean>;
+  /** Останні повідомлення розмови (від старих до нових), через RLS. */
+  recentMessages(conversationId: string, limit: number): Promise<HistoryMessage[]>;
   createConversation(userId: string, title: string): Promise<string>;
   saveMessage(
     userId: string,
     conversationId: string,
     role: Role,
     content: string,
+    toolCalls?: ToolCallRecord[],
   ): Promise<SavedMessage>;
 }
 
@@ -91,29 +102,39 @@ export function makeHandler(createDeps: DepsFactory) {
       }
       const { message, conversationId, timezone } = parsed.value;
 
-      // 3. Розмова: існуюча (власна) або нова
-      let convId: string;
+      // 3. Розмова: існуюча (власна) - перевіряємо й беремо історію; нова - створимо після відповіді
+      let convId: string | null = null;
+      let history: HistoryMessage[] = [];
       if (conversationId) {
         // Не розкриваємо, чи існує чужа розмова: для обох випадків 404.
         if (!(await deps.conversationExists(conversationId))) {
           return errorResponse(404, "not_found", "Розмову не знайдено.");
         }
         convId = conversationId;
-      } else {
-        convId = await deps.createConversation(user.id, message.slice(0, 60));
+        history = await deps.recentMessages(convId, HISTORY_LIMIT);
       }
 
-      // 4. Зберігаємо повідомлення користувача
-      await deps.saveMessage(user.id, convId, "user", message);
+      // 4. Агент: модель + інструменти. Якщо модель недоступна - нічого не зберігаємо.
+      const answer = await runAgent({
+        llm: deps.llm,
+        data: deps.data,
+        history,
+        userMessage: message,
+        tz: timezone,
+        now: deps.now(),
+      });
 
-      // 5. ЕТАП 2: відповідь-заглушка. На етапі 4 тут буде виклик Gemini.
-      const reply =
-        `Каркас асистента працює. Я отримав ваше повідомлення (${message.length} симв.). ` +
-        `Часова зона: ${timezone}. Відповіді на основі ваших даних з'являться на наступних етапах.`;
-      const saved = await deps.saveMessage(user.id, convId, "assistant", reply);
+      // 5. Зберігаємо пару повідомлень (питання + відповідь) лише після успіху
+      if (!convId) convId = await deps.createConversation(user.id, message.slice(0, 60));
+      await deps.saveMessage(user.id, convId, "user", message);
+      const saved = await deps.saveMessage(
+        user.id, convId, "assistant", answer.text,
+        answer.toolCalls.length ? answer.toolCalls : undefined,
+      );
 
       return jsonResponse({ conversation_id: convId, message: saved });
     } catch (err) {
+      if (err instanceof LlmError) return llmErrorResponse(err, deps.debugTools);
       // НЕ логуємо текст повідомлень - це потенційно медичні дані.
       console.error(
         "ai-assistant error:",
@@ -126,4 +147,35 @@ export function makeHandler(createDeps: DepsFactory) {
       );
     }
   };
+}
+
+/**
+ * Зрозумілі користувачу помилки моделі. У логи - лише тип і HTTP-статус, без вмісту.
+ * Деталь від Google додається у відповідь ТІЛЬКИ в налагоджувальному режимі (секрет AI_DEBUG_TOOLS).
+ */
+function llmErrorResponse(err: LlmError, debug: boolean): Response {
+  console.error("ai-assistant llm error:", err.kind, err.status ?? "", err.message);
+  const extra = debug ? { debug: { kind: err.kind, status: err.status ?? null, detail: err.detail ?? null } } : {};
+  const make = (status: number, code: string, message: string, retryAfter?: number) =>
+    jsonResponse(
+      {
+        error: { code, message, ...(retryAfter ? { retry_after_seconds: retryAfter } : {}) },
+        ...extra,
+      },
+      status,
+      retryAfter ? { "Retry-After": String(retryAfter) } : {},
+    );
+  switch (err.kind) {
+    case "rate_limited": {
+      // Підказка клієнту, скільки чекати (з відповіді Google; за замовчуванням хвилина).
+      const wait = Math.min(Math.max(err.retryAfterSeconds ?? 60, 1), 300);
+      return make(429, "ai_rate_limited", `Асистент зараз перевантажений. Спробуйте за ${wait} с.`, wait);
+    }
+    case "unavailable":
+      return make(503, "ai_unavailable", "Асистент тимчасово недоступний. Спробуйте пізніше.");
+    case "not_configured":
+      return make(503, "ai_not_configured", "Асистент ще не налаштований.");
+    default:
+      return make(502, "ai_error", "Не вдалося отримати відповідь асистента.");
+  }
 }
